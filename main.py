@@ -21,7 +21,7 @@ np.set_printoptions(suppress=True, precision=5)
 
 # ------------------------------------------------- Paths + file names ----------------------------------------------- #
 PROJECT_ROOT = Path(__file__).resolve().parents[0]
-DATA_DIR = PROJECT_ROOT / "data" / "raw"
+DATA_DIR = PROJECT_ROOT / "data"
 OUT_PATH = PROJECT_ROOT / "submission.csv"
 
 # ------------------------------------------------- CSVs ------------------------------------------------------------- #
@@ -482,7 +482,7 @@ def get_situational_features() -> pd.DataFrame:
 
 
 def get_quality_feature(cache: bool = True) -> pd.DataFrame:
-    processed_dir = PROJECT_ROOT / "data" / "processed"
+    processed_dir = PROJECT_ROOT / "cache"
     processed_dir.mkdir(parents=True, exist_ok=True)
     path = processed_dir / QUALITY_CACHE_FILE
 
