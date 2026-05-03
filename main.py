@@ -863,6 +863,7 @@ def main():
     print("✅ Done!")
 
     # --------------------------------- Apply Meta & Save ------------------------------------------------------------ #
+    print("Predicting...")
     out = out_detailed.copy()
 
     # Build meta features for submission
@@ -875,7 +876,6 @@ def main():
     final_pred = np.empty(len(out), dtype=float)
     men_mask_sub = (is_men_sub == 1)
     wom_mask_sub = (is_men_sub == 0)
-    print("Predicting...")
     final_pred[men_mask_sub] = meta_men.predict_proba(meta_sub[men_mask_sub])[:, 1]
     final_pred[wom_mask_sub] = meta_women.predict_proba(meta_sub[wom_mask_sub])[:, 1]
 
