@@ -637,6 +637,7 @@ def train(X, y, model_name):
         oof_probs: np.ndarray of probabilities aligned to X.index order
         labels: np.ndarray of 0/1 labels aligned to X.index order
     """
+    print("Training and Validation...")
     models = {}
     seasons = sorted(X["Season"].unique())
 
@@ -645,16 +646,18 @@ def train(X, y, model_name):
     oof_label = pd.Series(index=X.index, dtype=int)
 
     fold_scores = []
-
+    i = 1
     for excluded_season in seasons:
         val_mask = (X["Season"] == excluded_season)
         val_idx = X.index[val_mask]
-
+        # training: X and y without the excluded season:
         X_train = X.loc[~val_mask].drop(columns=["Season"]).values
         y_train_raw = y.loc[~val_mask, "TourDiff"].values
-
+        y_train = (y_train_raw > 0).astype(int)  # convert to binary
+        # validation: X and y of the excluded season:
         X_val = X.loc[val_mask].drop(columns=["Season"]).values
         y_val_raw = y.loc[val_mask, "TourDiff"].values
+        y_val = (y_val_raw > 0).astype(int)  # convert to binary
 
         if model_name == "xgb":
             # Margin regression (TourDiff) then Platt to win probability
@@ -668,13 +671,9 @@ def train(X, y, model_name):
 
             mae = mean_absolute_error(y_val_raw, margins)
             fold_scores.append(mae)
-            print(f"Excluded season: {excluded_season}. MAE: {mae:.5f}")
+            # print(f"Excluded season: {excluded_season}. MAE: {mae:.5f}")
 
         elif model_name == "xgb_bin":
-            # Direct probability model
-            y_train = (y_train_raw > 0).astype(int)
-            y_val = (y_val_raw > 0).astype(int)
-
             model = xgb.train(params=param_bin, dtrain=xgb.DMatrix(X_train, label=y_train), num_boost_round=num_rounds)
             models[excluded_season] = model
 
@@ -686,25 +685,26 @@ def train(X, y, model_name):
 
             brier = brier_score_loss(y_val, probs)
             fold_scores.append(brier)
-            print(f"Excluded season: {excluded_season}. Brier: {brier:.5f}")
+            # print(f"Excluded season: {excluded_season}. Brier: {brier:.5f}")
 
         else:  # lr
-            y_train = (y_train_raw > 0).astype(int)
-            model = Pipeline([("scaler", StandardScaler()),
-                              ("clf", LogisticRegression(max_iter=2000))])
+            # training and saving a new model:
+            model = Pipeline([("scaler", StandardScaler()), ("clf", LogisticRegression(max_iter=2000))])
             model.fit(X_train, y_train)
             models[excluded_season] = model
-
-            y_val = (y_val_raw > 0).astype(int)
+            # making a prediction for the validation X:
             probs = model.predict_proba(X_val)[:, 1]
-
+            # storing those predictions for the excluded season:
             oof_pred.loc[val_idx] = probs
+            # storing the real results for the excluded season:
             oof_label.loc[val_idx] = y_val
-
+            # computing the brier score of those predictions and adding it:
             brier = brier_score_loss(y_val, probs)
             fold_scores.append(brier)
-            print(f"Excluded season: {excluded_season}. Brier: {brier:.5f}")
-
+            # print(f"Excluded season: {excluded_season}. Brier: {brier:.5f}")
+        print(f"\r[{i}/{len(seasons)}] Models have completed training and validation", end="", flush=True)
+        i += 1
+    # those are the y labels for all the ~4500 games:
     labels = oof_label.astype(int).values
 
     if model_name == "xgb":
@@ -713,27 +713,20 @@ def train(X, y, model_name):
         calibrator.fit(margins.reshape(-1, 1), labels)
         probs = calibrator.predict_proba(margins.reshape(-1, 1))[:, 1]
         probs = np.clip(probs, 1e-6, 1 - 1e-6)
-
-        print(f"Average MAE: {float(np.mean(fold_scores)):.5f}")
-        print(f"OOF XGB calibrated Brier: {brier_score_loss(labels, probs):.5f}")
-
+        print(f"\nAverage MAE (per season): {float(np.mean(fold_scores)):.5f}")
+        print(f"Total Calibrated Brier (across all games): {brier_score_loss(labels, probs):.5f}")
+        print("✅ Done!")
         return models, calibrator, probs, labels
-
-    if model_name == "xgb_bin":
+    else:
         probs = np.clip(oof_pred.astype(float).values, 1e-6, 1 - 1e-6)
-        print(f"Average Brier: {float(np.mean(fold_scores)):.5f}")
-        print(f"OOF XGB_bin Brier: {brier_score_loss(labels, probs):.5f}")
+        print(f"\nAverage Brier (per season): {float(np.mean(fold_scores)):.5f}")
+        print(f"Total Brier (across all games): {brier_score_loss(labels, probs):.5f}")
+        print("✅ Done!")
         return models, None, probs, labels
-
-    # lr
-    probs = np.clip(oof_pred.astype(float).values, 1e-6, 1 - 1e-6)
-    print(f"Average Brier: {float(np.mean(fold_scores)):.5f}")
-    print(f"LR OOF Brier: {brier_score_loss(labels, probs):.5f}")
-
-    return models, None, probs, labels
 
 
 def predict(is_detailed, models, calibrator, X, model_name, to_subtract, features_to_keep=None):
+    print("Predicting...")
     # prepare the submission csv:
     sub = read_csv(SAMPLE_SUB, usecols=["ID", "Pred"])
     season, team_A, team_B = parse_submission_ids(sub)
@@ -754,19 +747,23 @@ def predict(is_detailed, models, calibrator, X, model_name, to_subtract, feature
 
     # run models on given dataset
     preds = []
-    for excluded_season in sorted(X.Season.unique()):
+    i = 1
+    seasons = sorted(X.Season.unique())
+    for excluded_season in seasons:
         model = models[excluded_season]
-
         if model_name == "xgb":
             margin_predictions = model.predict(xgb.DMatrix(X_test))
             probs = calibrator.predict_proba(margin_predictions.reshape(-1, 1))[:, 1]
         elif model_name == "xgb_bin":
             probs = model.predict(xgb.DMatrix(X_test))
-        else:
+        else:  # Logistic Regression
             probs = model.predict_proba(X_test.values)[:, 1]
         preds.append(probs)
-
+        print(f"\r[{i}/{len(models)}] Models generated predictions", end="", flush=True)
+        i += 1
     sub['Pred'] = np.array(preds).mean(axis=0)
+    print("\nTaking the mean prediction for every match")
+    print("✅ Done!")
     return sub[["ID", "Pred"]]
 
 
@@ -801,7 +798,7 @@ def get_best_features(model_type):
 
 def main():
     # --------------------------------- Prediction & Submission ------------------------------------------------------ #
-    print("\nTraining base model #1: Logistic Regression (filtered features, A-B diffs, detailed):")
+    print("Training base model #1: Logistic Regression (filtered features, A-B diffs, detailed):")
     features = ['EloEnd', 'Quality', 'OffEff', 'TS', 'NetEff', 'Def_eFG', 'FTR', 'Score', 'PF_Rate', 'Def_FTR',
                 'Seed_Gender_Interact', 'Poss', 'eFG', 'BLK_Rate', '3P%', 'AST_Rate', 'OppScore', 'RegDiff',
                 'TOV', 'Def_3P%', '3PAr', 'Road_WinPct', 'W', 'ORB', 'DefEff']
@@ -825,6 +822,9 @@ def main():
         is_detailed=True, to_subtract=False, model_name="xgb_bin", features_to_keep=features
     )
 
+    # out_ = each model's predictions for the 2025 season.
+    # oof_ = the oof predictions for each of the training games (2003 season - 2024 season)
+
     # --------------------------------- Stacking ----------------------------------------------------------- #
     # in this part, due to us having multiple models, we perform "stacking" to determine the weights of the prediction
     # each model should have based on history:
@@ -837,6 +837,7 @@ def main():
 
     # building the meta training features:
     meta_feats = np.column_stack([oof_detailed, oof_xg, oof_xg_bin])
+    print("Meta model has been created")
 
     # Fitting two metamodels (Men/Women) on OOF predictions:
     meta_men = LogisticRegression(max_iter=2000)
@@ -847,16 +848,19 @@ def main():
     women_mask = (is_men_train == 0)
 
     # fitting models using OOF base predictions:
+    print("Training...")
     meta_men.fit(meta_feats[men_mask], y_targets[men_mask])
     meta_women.fit(meta_feats[women_mask], y_targets[women_mask])
+    print("✅ Done!")
 
+    print("Validation...")
     oof_meta = np.empty_like(y_targets, dtype=float)
-    # generate probabilities from the meta models for the same training rows:
+    # generate probabilities from the metamodels for the same training rows:
     oof_meta[men_mask] = meta_men.predict_proba(meta_feats[men_mask])[:, 1]
     oof_meta[women_mask] = meta_women.predict_proba(meta_feats[women_mask])[:, 1]
     oof_meta = np.clip(oof_meta, 1e-6, 1 - 1e-6)
-
-    print(f">> OOF Meta Brier: {brier_score_loss(y_targets, oof_meta):.5f} <<")
+    print(f"OOF Meta Brier: {brier_score_loss(y_targets, oof_meta):.5f}")
+    print("✅ Done!")
 
     # --------------------------------- Apply Meta & Save ------------------------------------------------------------ #
     out = out_detailed.copy()
@@ -871,7 +875,7 @@ def main():
     final_pred = np.empty(len(out), dtype=float)
     men_mask_sub = (is_men_sub == 1)
     wom_mask_sub = (is_men_sub == 0)
-
+    print("Predicting...")
     final_pred[men_mask_sub] = meta_men.predict_proba(meta_sub[men_mask_sub])[:, 1]
     final_pred[wom_mask_sub] = meta_women.predict_proba(meta_sub[wom_mask_sub])[:, 1]
 
@@ -882,6 +886,7 @@ def main():
     # out["Pred"] = np.where(out["Pred"] <= 0.2, 0.0, out["Pred"])
 
     out.to_csv(OUT_PATH, index=False)
+    print("✅ Done!")
     print(f"\nWrote: {OUT_PATH}")
 
 
